@@ -107,6 +107,7 @@ HID_DEVICES = {
     "Sony Interactive Entertainment Wireless Controller": HidrawUSBDS4Device,
     "Sony Computer Entertainment Wireless Controller": HidrawUSBDS4Device,
     "Wireless Controller": HidrawBluetoothDS4Device,
+    "SZ-MYPOWER DS4 Wired Controller": HidrawUSBDS4Device
 }
 
 
