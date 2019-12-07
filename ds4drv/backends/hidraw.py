@@ -6,7 +6,7 @@ from io import FileIO
 from time import sleep
 
 from evdev import InputDevice
-from pyudev import Context, Monitor
+from pyudev import Context, Monitor, MonitorObserver
 
 from ..backend import Backend
 from ..exceptions import DeviceError
@@ -37,11 +37,11 @@ class HidrawDS4Device(DS4Device):
         try:
             ret = self.fd.readinto(self.buf)
         except IOError:
-            return
+            return 'ioerror'
 
         # Disconnection
         if ret == 0:
-            return
+            return 'disconnection'
 
         # Invalid report size or id, just ignore it
         if ret < self.report_size or self.buf[0] != self.valid_report_id:
@@ -75,7 +75,6 @@ class HidrawDS4Device(DS4Device):
             self.input_device.ungrab()
         except IOError:
             pass
-
 
 class HidrawBluetoothDS4Device(HidrawDS4Device):
     __type__ = "bluetooth"
@@ -114,8 +113,44 @@ HID_DEVICES = {
 class HidrawBackend(Backend):
     __name__ = "hidraw"
 
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.context = Context()
+
     def setup(self):
         pass
+
+    def catchHidrawDevice(device):
+	#if device.action != "add": return None
+        hid_device = device.parent
+        if hid_device.subsystem != "hid": return None
+        cls = HID_DEVICES.get(hid_device.get("HID_NAME"))
+        if not cls: return None
+        for child in hid_device.parent.children:
+            event_device = child.get("DEVNAME", "")
+            if event_device.startswith("/dev/input/event"): break
+        else: return None
+        device_addr = hid_device.get("HID_UNIQ", "").upper()
+        if device_addr:
+            device_name = "{0} {1}".format(device_addr,
+                                           device.sys_name)
+        else:
+            device_name = device.sys_name
+        return (device, hid_device, cls, event_device, device_addr, device_name)
+
+    def constructDevice(self, devtuple):
+        device, hid_device, cls, event_device, device_addr, device_name = devtuple
+        try:
+            d = cls(name=device_name,
+                    addr=device_addr,
+                    type=cls.__type__,
+                    hidraw_device=device.device_node,
+                    event_device=event_device)
+
+        except DeviceError as err:
+            self.logger.error("Unable to open DS4 device: {0}", err)
+        else:
+            return d
 
     def _get_future_devices(self, context):
         """Return a generator yielding new devices."""
@@ -130,7 +165,6 @@ class HidrawBackend(Backend):
                 # causing permission denied error if we are running in user
                 # mode. With this sleep this will hopefully not happen.
                 sleep(1)
-
                 yield device
                 self._scanning_log_message()
 
@@ -178,3 +212,21 @@ class HidrawBackend(Backend):
 
             except DeviceError as err:
                 self.logger.error("Unable to open DS4 device: {0}", err)
+    
+    @property
+    def existing_devices(self):
+        return list(map(self.constructDevice,
+                    filter(lambda d: not (d is None), 
+                    map(HidrawBackend.catchHidrawDevice, self.context.list_devices(subsystem="hidraw") ))))
+        
+
+    def add_device_observer(self, handler):
+        monitor = Monitor.from_netlink(self.context)
+        monitor.filter_by("hidraw")
+        def trigger_event(action, device):
+            if action != 'add': return
+            dev = HidrawBackend.catchHidrawDevice(device)
+            if dev is None: return
+            return handler(self.constructDevice(dev))
+        observer = MonitorObserver(monitor, trigger_event)
+        return observer

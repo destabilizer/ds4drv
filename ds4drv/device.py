@@ -234,3 +234,6 @@ class DS4Device(object):
             type_name = "USB"
 
         return "{0} Controller ({1})".format(type_name, self.device_name)
+
+    def __repr__(self):
+        return self.name
